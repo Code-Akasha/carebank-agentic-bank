@@ -318,10 +318,40 @@ class Storage:
                     "interest_rate": 4.5,
                 },
                 {
+                    "id": "prod_fd_1yr",
+                    "name": "1-Year Fixed Deposit",
+                    "category": "investments",
+                    "interest_rate": 7.1,
+                },
+                {
                     "id": "prod_credit_bridge",
                     "name": "Credit Bridge",
                     "category": "credit",
                     "interest_rate": 12.0,
+                },
+                {
+                    "id": "prod_home_loan",
+                    "name": "Care Home Loan",
+                    "category": "loan",
+                    "interest_rate": 8.5,
+                },
+                {
+                    "id": "prod_auto_loan",
+                    "name": "Care Auto Loan",
+                    "category": "loan",
+                    "interest_rate": 9.2,
+                },
+                {
+                    "id": "prod_cc_platinum",
+                    "name": "Platinum Rewards Card",
+                    "category": "credit_card",
+                    "interest_rate": 18.0,
+                },
+                {
+                    "id": "prod_health_insure",
+                    "name": "Care Health Insurance",
+                    "category": "insurance",
+                    "interest_rate": 0.0,
                 },
             ],
             "bank_plans": {
