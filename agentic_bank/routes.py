@@ -546,6 +546,8 @@ async def create_account_endpoint(
     )
     if _should_cache("POST", body):
         service.storage.set_cache(fingerprint, ctx.user_id, "POST", "/accounts", response)
+    service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/accounts")
+    service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/balances")
     return response
 
 
@@ -569,6 +571,8 @@ async def delete_account_endpoint(
         },
         deterministic=deterministic,
     )
+    service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/accounts")
+    service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/balances")
     return response
 
 

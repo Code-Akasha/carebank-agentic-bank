@@ -206,6 +206,25 @@ class Storage:
             (fingerprint, user_id, method, path, payload, utc_now_iso()),
         )
 
+    def delete_cache_entries(
+        self,
+        *,
+        user_id: str,
+        method: str,
+        path: str,
+    ) -> None:
+        if self._is_postgres:
+            self._postgres_execute(
+                "DELETE FROM response_cache WHERE user_id = %s AND method = %s AND path = %s",
+                (user_id, method, path),
+            )
+            return
+
+        self._sqlite_execute(
+            "DELETE FROM response_cache WHERE user_id = ? AND method = ? AND path = ?",
+            (user_id, method, path),
+        )
+
     def get_state(self, user_id: str) -> dict | None:
         if self._is_postgres:
             row = self._postgres_fetchone(
