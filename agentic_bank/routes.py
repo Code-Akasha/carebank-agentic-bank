@@ -82,7 +82,7 @@ class ProxyService:
     def __init__(self) -> None:
         settings = get_settings()
         self._settings = settings
-        self._storage = Storage(settings.db_path)
+        self._storage = Storage(settings.database_url or settings.db_path)
         self._gemini = GeminiClient()
 
     @property

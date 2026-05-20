@@ -37,6 +37,7 @@ def _get_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
+    database_url: str
     db_path: str
     banking_api_secret: str
     webhook_secret: str
@@ -56,6 +57,8 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings(
+            database_url=os.getenv("PROXY_DATABASE_URL")
+            or os.getenv("DATABASE_URL", ""),
             db_path=os.getenv("PROXY_DB_PATH", "./agentic_proxy.db"),
             banking_api_secret=os.getenv("BANKING_API_SECRET", ""),
             webhook_secret=os.getenv("PROXY_WEBHOOK_SECRET")

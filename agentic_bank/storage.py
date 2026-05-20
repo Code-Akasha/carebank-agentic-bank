@@ -28,61 +28,145 @@ def _json_loads(raw: str | None) -> Any:
     return json.loads(raw)
 
 
+def _is_postgres_target(db_target: str) -> bool:
+    return db_target.startswith("postgres://") or db_target.startswith(
+        "postgresql://"
+    )
+
+
+def _normalize_postgres_dsn(db_target: str) -> str:
+    if db_target.startswith("postgres://"):
+        return "postgresql://" + db_target.removeprefix("postgres://")
+    return db_target
+
+
+def _get_psycopg2():
+    try:
+        import psycopg2
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "PostgreSQL storage requires psycopg2-binary to be installed"
+        ) from exc
+    return psycopg2
+
+
 class Storage:
     def __init__(self, db_path: str) -> None:
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
+        self._is_postgres = _is_postgres_target(db_path)
         self._lock = Lock()
+        if self._is_postgres:
+            self._dsn = _normalize_postgres_dsn(db_path)
+            self._conn = None
+        else:
+            self._dsn = ""
+            self._conn = sqlite3.connect(db_path, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
         self._init_db()
 
-    def _init_db(self) -> None:
+    def _sqlite_execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
         with self._lock:
-            cur = self._conn.cursor()
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS response_cache (
-                    fingerprint TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    method TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    response_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """
+            assert self._conn is not None
+            self._conn.execute(query, params)
+            self._conn.commit()
+
+    def _sqlite_fetchone(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> sqlite3.Row | None:
+        with self._lock:
+            assert self._conn is not None
+            cursor = self._conn.execute(query, params)
+            return cursor.fetchone()
+
+    def _sqlite_fetchall(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> list[sqlite3.Row]:
+        with self._lock:
+            assert self._conn is not None
+            cursor = self._conn.execute(query, params)
+            return cursor.fetchall()
+
+    def _postgres_execute(self, query: str, params: tuple[Any, ...] = ()) -> None:
+        psycopg2 = _get_psycopg2()
+        with psycopg2.connect(self._dsn) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+
+    def _postgres_fetchone(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> tuple[Any, ...] | None:
+        psycopg2 = _get_psycopg2()
+        with psycopg2.connect(self._dsn) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchone()
+
+    def _postgres_fetchall(
+        self, query: str, params: tuple[Any, ...] = ()
+    ) -> list[tuple[Any, ...]]:
+        psycopg2 = _get_psycopg2()
+        with psycopg2.connect(self._dsn) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(query, params)
+                return cursor.fetchall()
+
+    def _init_db(self) -> None:
+        statements = [
+            """
+            CREATE TABLE IF NOT EXISTS response_cache (
+                fingerprint TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS world_state (
-                    user_id TEXT PRIMARY KEY,
-                    state_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS world_state (
+                user_id TEXT PRIMARY KEY,
+                state_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS dead_letters (
-                    id TEXT PRIMARY KEY,
-                    webhook_url TEXT,
-                    payload_json TEXT NOT NULL,
-                    attempts_json TEXT,
-                    status TEXT NOT NULL,
-                    attempt_count INTEGER NOT NULL,
-                    last_error TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS dead_letters (
+                id TEXT PRIMARY KEY,
+                webhook_url TEXT,
+                payload_json TEXT NOT NULL,
+                attempts_json TEXT,
+                status TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )
+            """,
+        ]
+        if self._is_postgres:
+            psycopg2 = _get_psycopg2()
+            with psycopg2.connect(self._dsn) as conn:
+                with conn.cursor() as cursor:
+                    for statement in statements:
+                        cursor.execute(statement)
+            return
+
+        with self._lock:
+            assert self._conn is not None
+            for statement in statements:
+                self._conn.execute(statement)
             self._conn.commit()
 
     def get_cache(self, fingerprint: str) -> dict | None:
-        with self._lock:
-            cur = self._conn.execute(
+        if self._is_postgres:
+            row = self._postgres_fetchone(
+                "SELECT response_json FROM response_cache WHERE fingerprint = %s",
+                (fingerprint,),
+            )
+        else:
+            row = self._sqlite_fetchone(
                 "SELECT response_json FROM response_cache WHERE fingerprint = ?",
                 (fingerprint,),
             )
-            row = cur.fetchone()
         if not row:
             return None
         return _json_loads(row[0])
@@ -96,56 +180,90 @@ class Storage:
         response: Any,
     ) -> None:
         payload = _json_dumps(response)
-        with self._lock:
-            self._conn.execute(
+        if self._is_postgres:
+            self._postgres_execute(
                 """
-                INSERT OR REPLACE INTO response_cache
+                INSERT INTO response_cache
                     (fingerprint, user_id, method, path, response_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (fingerprint) DO UPDATE SET
+                    user_id = EXCLUDED.user_id,
+                    method = EXCLUDED.method,
+                    path = EXCLUDED.path,
+                    response_json = EXCLUDED.response_json,
+                    created_at = EXCLUDED.created_at
                 """,
                 (fingerprint, user_id, method, path, payload, utc_now_iso()),
             )
-            self._conn.commit()
+            return
+
+        self._sqlite_execute(
+            """
+            INSERT OR REPLACE INTO response_cache
+                (fingerprint, user_id, method, path, response_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (fingerprint, user_id, method, path, payload, utc_now_iso()),
+        )
 
     def get_state(self, user_id: str) -> dict | None:
-        with self._lock:
-            cur = self._conn.execute(
+        if self._is_postgres:
+            row = self._postgres_fetchone(
+                "SELECT state_json FROM world_state WHERE user_id = %s",
+                (user_id,),
+            )
+        else:
+            row = self._sqlite_fetchone(
                 "SELECT state_json FROM world_state WHERE user_id = ?",
                 (user_id,),
             )
-            row = cur.fetchone()
         if not row:
             return None
         return _json_loads(row[0])
 
     def save_state(self, user_id: str, state: dict) -> None:
         payload = _json_dumps(state)
-        with self._lock:
-            self._conn.execute(
+        if self._is_postgres:
+            self._postgres_execute(
                 """
-                INSERT OR REPLACE INTO world_state
+                INSERT INTO world_state
                     (user_id, state_json, updated_at)
-                VALUES (?, ?, ?)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    state_json = EXCLUDED.state_json,
+                    updated_at = EXCLUDED.updated_at
                 """,
                 (user_id, payload, utc_now_iso()),
             )
-            self._conn.commit()
+            return
+
+        self._sqlite_execute(
+            """
+            INSERT OR REPLACE INTO world_state
+                (user_id, state_json, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (user_id, payload, utc_now_iso()),
+        )
 
     def list_state_users(self) -> list[str]:
-        with self._lock:
-            cur = self._conn.execute("SELECT user_id FROM world_state")
-            rows = cur.fetchall()
+        if self._is_postgres:
+            rows = self._postgres_fetchall("SELECT user_id FROM world_state")
+        else:
+            rows = self._sqlite_fetchall("SELECT user_id FROM world_state")
         return [str(row[0]) for row in rows]
 
     def get_dead_letters(self, status_filter: str | None = None) -> list[dict]:
         query = "SELECT * FROM dead_letters"
         params: tuple[Any, ...] = ()
         if status_filter:
-            query += " WHERE status = ?"
+            query += " WHERE status = %s" if self._is_postgres else " WHERE status = ?"
             params = (status_filter,)
-        with self._lock:
-            cur = self._conn.execute(query, params)
-            rows = cur.fetchall()
+        rows = (
+            self._postgres_fetchall(query, params)
+            if self._is_postgres
+            else self._sqlite_fetchall(query, params)
+        )
         records: list[dict] = []
         for row in rows:
             records.append(
@@ -164,12 +282,16 @@ class Storage:
         return records
 
     def get_dead_letter(self, dead_letter_id: str) -> dict | None:
-        with self._lock:
-            cur = self._conn.execute(
-                "SELECT * FROM dead_letters WHERE id = ?",
-                (dead_letter_id,),
-            )
-            row = cur.fetchone()
+        query = (
+            "SELECT * FROM dead_letters WHERE id = %s"
+            if self._is_postgres
+            else "SELECT * FROM dead_letters WHERE id = ?"
+        )
+        row = (
+            self._postgres_fetchone(query, (dead_letter_id,))
+            if self._is_postgres
+            else self._sqlite_fetchone(query, (dead_letter_id,))
+        )
         if not row:
             return None
         return {
@@ -188,27 +310,47 @@ class Storage:
         attempts = record.get("attempts") or []
         payload = _json_dumps(record.get("payload") or {})
         attempts_payload = _json_dumps(attempts)
-        with self._lock:
-            self._conn.execute(
+        params = (
+            record.get("id"),
+            record.get("webhook_url"),
+            payload,
+            attempts_payload,
+            record.get("status"),
+            int(record.get("attempt_count") or 0),
+            record.get("last_error"),
+            record.get("created_at") or utc_now_iso(),
+            record.get("updated_at") or utc_now_iso(),
+        )
+        if self._is_postgres:
+            self._postgres_execute(
                 """
-                INSERT OR REPLACE INTO dead_letters
+                INSERT INTO dead_letters
                     (id, webhook_url, payload_json, attempts_json, status,
                      attempt_count, last_error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    webhook_url = EXCLUDED.webhook_url,
+                    payload_json = EXCLUDED.payload_json,
+                    attempts_json = EXCLUDED.attempts_json,
+                    status = EXCLUDED.status,
+                    attempt_count = EXCLUDED.attempt_count,
+                    last_error = EXCLUDED.last_error,
+                    created_at = EXCLUDED.created_at,
+                    updated_at = EXCLUDED.updated_at
                 """,
-                (
-                    record.get("id"),
-                    record.get("webhook_url"),
-                    payload,
-                    attempts_payload,
-                    record.get("status"),
-                    int(record.get("attempt_count") or 0),
-                    record.get("last_error"),
-                    record.get("created_at") or utc_now_iso(),
-                    record.get("updated_at") or utc_now_iso(),
-                ),
+                params,
             )
-            self._conn.commit()
+            return
+
+        self._sqlite_execute(
+            """
+            INSERT OR REPLACE INTO dead_letters
+                (id, webhook_url, payload_json, attempts_json, status,
+                 attempt_count, last_error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            params,
+        )
 
     def build_seed_state(self, user_id: str) -> dict:
         rng = random.Random(_seed_from_user_id(user_id))
