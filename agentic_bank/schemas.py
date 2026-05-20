@@ -53,6 +53,7 @@ SCHEMA_HINTS: dict[str, Any] = {
         {
             "account_id": "acc_user_001_1",
             "user_id": "user_001",
+            "provider_id": "agentic_proxy",
             "name": "Primary Savings",
             "account_type": "savings",
             "current_balance": 24500.0,
@@ -63,13 +64,28 @@ SCHEMA_HINTS: dict[str, Any] = {
     "account": {
         "account_id": "acc_user_001_2",
         "user_id": "user_001",
+        "provider_id": "agentic_proxy",
         "name": "Travel Bucket",
         "account_type": "savings",
         "current_balance": 1500.0,
         "available_balance": 1500.0,
         "status": "active",
     },
-    "account_create": {"account": {"account_id": "acc_user_001_2"}},
+    "account_create": {
+        "account": {
+            "account_id": "acc_user_001_2",
+            "user_id": "user_001",
+            "provider_id": "agentic_proxy",
+            "name": "Travel Bucket",
+            "account_type": "savings",
+            "mask": "0001",
+            "currency": "INR",
+            "institution": "Agentic Proxy Bank",
+            "current_balance": 1500.0,
+            "available_balance": 1500.0,
+            "status": "active",
+        }
+    },
     "account_delete": {"status": "deleted", "account_id": "acc_user_001_2"},
     "beneficiaries": [
         {
@@ -202,6 +218,7 @@ _VALIDATION_RULES: dict[str, dict[str, Any]] = {
         "item_required": [
             "account_id",
             "user_id",
+            "provider_id",
             "name",
             "account_type",
             "current_balance",
@@ -214,6 +231,7 @@ _VALIDATION_RULES: dict[str, dict[str, Any]] = {
         "required": [
             "account_id",
             "user_id",
+            "provider_id",
             "name",
             "account_type",
             "current_balance",
@@ -221,7 +239,10 @@ _VALIDATION_RULES: dict[str, dict[str, Any]] = {
             "status",
         ],
     },
-    "account_create": {"type": "object", "required": ["account"]},
+    "account_create": {
+        "type": "object",
+        "required": ["account"],
+    },
     "account_delete": {"type": "object", "required": ["status", "account_id"]},
     "beneficiaries": {
         "type": "list",
@@ -273,6 +294,25 @@ def get_schema_hint(schema_key: str) -> Any:
 def validate_response(schema_key: str, data: Any) -> bool:
     rule = _VALIDATION_RULES.get(schema_key)
     if not rule:
+        return True
+    if schema_key == "account_create":
+        if not isinstance(data, dict):
+            return False
+        account = data.get("account")
+        if not isinstance(account, dict):
+            return False
+        for key in [
+            "account_id",
+            "user_id",
+            "provider_id",
+            "name",
+            "account_type",
+            "current_balance",
+            "available_balance",
+            "status",
+        ]:
+            if key not in account:
+                return False
         return True
     if rule["type"] == "object":
         if not isinstance(data, dict):
