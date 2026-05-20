@@ -330,6 +330,15 @@ async def trigger_transaction(
     )
     save_state(service.storage, ctx.user_id, state)
 
+    # Invalidate cached GET responses so clients fetch updated balances/transactions
+    try:
+        service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/balances")
+        service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/transactions")
+        service.storage.delete_cache_entries(user_id=ctx.user_id, method="GET", path="/accounts")
+    except Exception:
+        # Do not fail the transaction flow if cache invalidation has problems
+        logger.exception("failed to delete cache entries after transaction")
+
     deterministic = {
         "status": "accepted",
         "transaction": transaction,
