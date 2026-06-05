@@ -4,7 +4,7 @@ import hashlib
 import json
 import random
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from threading import Lock
 from typing import Any
 
@@ -394,8 +394,17 @@ class Storage:
         }
 
         transactions: list[dict] = []
-        for index in range(10):
-            amount = round(-(200 + rng.random() * 1200), 2)
+        now = datetime.now(timezone.utc)
+        for index in range(80):
+            amount = round(-(100 + rng.random() * 2500), 2)
+            if rng.random() > 0.85:
+                # Occasional credit (e.g. salary, refund)
+                amount = round((5000 + rng.random() * 20000), 2)
+            
+            days_ago = rng.randint(0, 90)
+            hours_ago = rng.randint(0, 23)
+            tx_date = (now - timedelta(days=days_ago, hours=hours_ago)).isoformat()
+
             transactions.append(
                 {
                     "id": 1000 + index,
@@ -408,24 +417,30 @@ class Storage:
                             "Fuel Bay",
                             "Cloud Telecom",
                             "Cinema House",
+                            "Tech Store",
+                            "Health Plus",
+                            "Food Delivery Co",
                         ]
                     ),
                     "category": rng.choice(
-                        ["food", "shopping", "fuel", "utilities", "entertainment"]
+                        ["food", "shopping", "fuel", "utilities", "entertainment", "health", "transfer"]
                     ),
                     "description": "Synthetic transaction",
-                    "date": utc_now_iso(),
+                    "date": tx_date,
                     "status": "success",
                     "lifecycle": [
                         {
                             "status": "success",
-                            "timestamp": utc_now_iso(),
+                            "timestamp": tx_date,
                             "reason": "seeded",
                             "metadata": {},
                         }
                     ],
                 }
             )
+        
+        # Sort transactions by date descending
+        transactions.sort(key=lambda t: t["date"], reverse=True)
 
         default_policy_matrix = {
             "pay_rent": {
